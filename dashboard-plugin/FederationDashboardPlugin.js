@@ -4,10 +4,6 @@ const fetch = require("node-fetch");
 const AutomaticVendorFederation = require("@module-federation/automatic-vendor-federation");
 const convertToGraph = require("./convertToGraph");
 const DefinePlugin = require("webpack/lib/DefinePlugin");
-const parser = require("@babel/parser");
-const generate = require("@babel/generator").default;
-const traverse = require("@babel/traverse").default;
-const { isNode } = require("@babel/types");
 const webpack = require("webpack");
 /** @typedef {import('webpack/lib/Compilation')} Compilation */
 /** @typedef {import('webpack/lib/Compiler')} Compiler */
@@ -53,6 +49,13 @@ class FederationDashboardPlugin {
         "Dashboard plugin is missing Module Federation or standalone option"
       );
     }
+
+    if(!this._options.parseModuleAst) {
+      throw new Error(
+        "Dashboard plugin is missing parseModuleAst option"
+      );
+    }
+
     this.FederationPluginOptions.name =
       this.FederationPluginOptions.name.replace("__REMOTE_VERSION__", "");
     compiler.hooks.thisCompilation.tap(PLUGIN_NAME, (compilation) => {
@@ -74,107 +77,13 @@ class FederationDashboardPlugin {
     }
   }
 
-  parseModuleAst(compilation, callback) {
-    const filePaths = [];
-    const allArgumentsUsed = [];
-    // Explore each chunk (build output):
-    compilation.chunks.forEach((chunk) => {
-      // Explore each module within the chunk (built inputs):
-      chunk.getModules().forEach((module) => {
-        // Loop through all the dependencies that has the named export that we are looking for
-        const matchedNamedExports = module.dependencies.filter((dep) => {
-          return dep.name === "federateComponent";
-        });
-
-        if (matchedNamedExports.length > 0) {
-          // we know that this module exported the function we care about
-          // now we need to know how many times this function is invoked in the source code
-          // along with all the arguments of it
-
-          // these modules could be a combination of multiple source files, so we need to traverse
-          // through its fileDependencies
-          if (module.resource) {
-            filePaths.push({
-              resource: module.resource,
-              file: module.resourceResolveData.relativePath,
-            });
-          }
-        }
-      });
-
-      filePaths.forEach(({ resource, file }) => {
-        const sourceCode = fs.readFileSync(resource).toString("utf-8");
-        const ast = parser.parse(sourceCode, {
-          sourceType: "unambiguous",
-          plugins: ["jsx", "typescript"],
-        });
-
-        // traverse the abstract syntax tree
-        traverse(ast, {
-          /**
-           * We want to run a function depending on a found nodeType
-           * More node types are documented here: https://babeljs.io/docs/en/babel-types#api
-           */
-          CallExpression: (path) => {
-            const node = path.node;
-            const { callee, arguments: args } = node;
-
-            if (callee.loc.identifierName === "federateComponent") {
-              const argsAreStrings = args.every((arg) => {
-                return arg.type === "StringLiteral";
-              });
-              if (!argsAreStrings) {
-                return;
-              }
-              const argsValue = [file];
-
-              // we collect the JS representation of each argument used in this function call
-              for (let i = 0; i < args.length; i += 1) {
-                const a = args[i];
-                let { code } = generate(a);
-
-                if (code.startsWith("{")) {
-                  // wrap it in parentheses, so when it's eval-ed, it is eval-ed correctly into an JS object
-                  code = `(${code})`;
-                }
-
-                const value = eval(code);
-
-                // If the value is a Node, that means it was a variable name
-                // There is no easy way to resolve the variable real value, so we just skip any function calls
-                // that has variable as its args
-                if (!isNode(value)) {
-                  argsValue.push(value);
-                } else {
-                  // by breaking out of the loop here,
-                  // we also prevent this args to be pushed to `allArgumentsUsed`
-                  break;
-                }
-
-                if (i === args.length - 1) {
-                  // push to the top level array
-                  allArgumentsUsed.push(argsValue);
-                }
-              }
-            }
-          },
-        });
-      });
-    });
-    const uniqueArgs = allArgumentsUsed.reduce((acc, current) => {
-      const id = current.join("|");
-      acc[id] = current;
-      return acc;
-    }, {});
-    this.allArgumentsUsed = Object.values(uniqueArgs);
-    if (callback) callback();
-  }
-
   processWebpackGraph(curCompiler, callback) {
     const liveStats = curCompiler.getStats();
     const stats = liveStats.toJson();
+    const parseModuleAst = this._options.parseModuleAst.bind(this);
+
     if (this._options.useAST) {
-      this.parseModuleAst(curCompiler);
+      this.allArgumentsUsed = parseModuleAst(curCompiler);
     }
 
     // filter modules
