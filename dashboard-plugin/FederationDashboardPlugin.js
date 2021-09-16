@@ -166,15 +166,23 @@ class FederationDashboardPlugin {
       acc[id] = current;
       return acc;
     }, {});
-    this.allArgumentsUsed = Object.values(uniqueArgs);
+    return Object.values(uniqueArgs);
     if (callback) callback();
   }
+
 
   processWebpackGraph(curCompiler, callback) {
     const liveStats = curCompiler.getStats();
     const stats = liveStats.toJson();
+    let parseModuleAst;
+    if(this._options.parseModuleAst) {
+      parseModuleAst = this._options.parseModuleAst.bind(this);
+    } else {
+      parseModuleAst = this.parseModuleAst.bind(this);
+    }
+
     if (this._options.useAST) {
-      this.parseModuleAst(curCompiler);
+      this.allArgumentsUsed = parseModuleAst(curCompiler);
     }
 
     // filter modules
